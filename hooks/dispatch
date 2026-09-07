@@ -1,0 +1,13 @@
+#!/usr/bin/env sh
+# thrift's PreToolUse entry point.
+#
+# This wrapper is the outermost fail-open layer. It runs ahead of every Read,
+# Bash and Grep in the session, so an unbuilt binary, a killed process or a
+# missing plugin root must all end as "do nothing" rather than as an error on
+# a tool call the user was waiting for.
+[ -n "${THRIFT_OFF}" ] && exit 0
+
+BIN="${CLAUDE_PLUGIN_ROOT:-$(dirname "$0")/..}/bin/thrift"
+[ -x "${BIN}" ] || exit 0
+
+exec "${BIN}" hook

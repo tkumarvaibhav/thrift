@@ -1,0 +1,5 @@
+bin/
+.thrift/
+*.log
+.DS_Store
+.idea/

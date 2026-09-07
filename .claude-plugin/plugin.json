@@ -1,0 +1,18 @@
+{
+  "name": "thrift",
+  "displayName": "thrift",
+  "version": "0.1.0",
+  "description": "Cuts token use by bounding what enters context: one PreToolUse dispatcher that rewrites wasteful calls, denies unfixable ones, and records what it saved.",
+  "author": {
+    "name": "vaibhav"
+  },
+  "keywords": [
+    "tokens",
+    "context-engineering",
+    "cost",
+    "hooks"
+  ],
+  "license": "MIT",
+  "skills": "./skills/",
+  "hooks": "./hooks/hooks.json"
+}

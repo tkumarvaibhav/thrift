@@ -1,0 +1,13 @@
+#!/usr/bin/env sh
+# thrift's SessionStart directive: the doctrine, injected once per session.
+#
+# It deliberately says nothing the dispatcher already enforces. Read caps,
+# output flags and command shape are handled by hooks; repeating them here
+# would pay for the same rule twice, once in tokens and once in attention.
+# What is left is only what a hook cannot see: pacing, batching, and when to
+# stop.
+[ -n "${THRIFT_OFF}" ] && exit 0
+
+cat <<'JSON'
+{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"Token discipline (thrift):\n- Search before reading. Prefer rg/jq/ast-grep/git --stat over dumping a file.\n- Batch independent tool calls into one block.\n- Hand whole-file questions to a haiku subagent; its context is not yours.\n- Lead with the answer. No preamble, no postamble, no restating the question.\n- Report deltas, not narration.\n- Stop the moment you have enough to act."}}
+JSON

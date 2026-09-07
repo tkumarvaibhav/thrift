@@ -1,0 +1,21 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "thrift",
+  "version": "0.1.0",
+  "description": "Token-efficiency plugin marketplace.",
+  "owner": {
+    "name": "vaibhav"
+  },
+  "plugins": [
+    {
+      "name": "thrift",
+      "description": "Cuts token use by bounding what enters context: one PreToolUse dispatcher that rewrites wasteful calls, denies unfixable ones, and records what it saved.",
+      "version": "0.1.0",
+      "author": {
+        "name": "vaibhav"
+      },
+      "source": "./",
+      "category": "developer-tools"
+    }
+  ]
+}

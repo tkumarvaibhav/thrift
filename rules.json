@@ -1,0 +1,27 @@
+{
+  "read": {
+    "enabled": true,
+    "cap_above_bytes": 32768,
+    "cap_to_lines": 250,
+    "deny_above_bytes": 524288
+  },
+  "bash": {
+    "enabled": true,
+    "decision": "ask",
+    "tail_lines": 80,
+    "cat_above_bytes": 16384,
+    "noisy": [
+      "npm test", "npm run", "npm install", "npm ci", "npx tsc",
+      "yarn", "pnpm", "jest", "vitest", "eslint", "tsc",
+      "go test", "gofmt -l", "golangci-lint",
+      "pytest", "python -m pytest", "pip install",
+      "cargo test", "cargo build", "cargo clippy",
+      "make", "mvn", "gradle", "./gradlew",
+      "docker build", "terraform plan"
+    ]
+  },
+  "grep": {
+    "enabled": true,
+    "head_limit": 60
+  }
+}
