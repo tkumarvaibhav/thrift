@@ -12,7 +12,5 @@
     "cost",
     "hooks"
   ],
-  "license": "MIT",
-  "skills": "./skills/",
-  "hooks": "./hooks/hooks.json"
+  "license": "MIT"
 }
