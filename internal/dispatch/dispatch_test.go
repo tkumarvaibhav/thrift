@@ -23,6 +23,7 @@ func testConfig() Config {
 			Decision:      "ask",
 			TailLines:     60,
 			CatAboveBytes: 1000,
+			MaxSliceLines: 100,
 			Noisy:         []string{"npm test", "go test", "pytest", "make"},
 		},
 		Grep: GrepRules{Enabled: true, HeadLimit: 50},

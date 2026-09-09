@@ -26,6 +26,7 @@ func Defaults() Config {
 			Decision:      "ask",
 			TailLines:     80,
 			CatAboveBytes: 16 * 1024,
+			MaxSliceLines: 1000,
 			Noisy: []string{
 				"npm test", "npm run", "npm install", "npm ci", "npx tsc",
 				"yarn", "pnpm", "jest", "vitest", "eslint", "tsc",

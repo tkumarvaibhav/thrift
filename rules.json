@@ -10,6 +10,7 @@
     "decision": "ask",
     "tail_lines": 80,
     "cat_above_bytes": 16384,
+    "max_slice_lines": 1000,
     "noisy": [
       "npm test", "npm run", "npm install", "npm ci", "npx tsc",
       "yarn", "pnpm", "jest", "vitest", "eslint", "tsc",

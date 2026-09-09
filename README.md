@@ -12,6 +12,7 @@ Read(600KB file)      →  deny, with the exact Haiku subagent call to run inste
 Read(80KB file)       →  allow, capped to 250 lines, and told the model it was capped
 Bash("npm test")      →  wrapped so 10k lines of output arrive as 80 — exit code intact
 Bash("cat big.json")  →  deny: "use jq -r '<path>' instead"
+Bash("head -9999 f")  →  deny: a slice that large is the file under another name
 Grep(content, no cap) →  allow, head_limit 60
 ```
 

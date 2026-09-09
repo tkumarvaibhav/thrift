@@ -24,11 +24,17 @@ type ReadRules struct {
 // Decision is the permission verb used for a Bash rewrite and defaults to
 // "ask". "allow" would suppress the user's own permission prompt for a command
 // they never saw, so opting into it is a deliberate choice, not a default.
+//
+// MaxSliceLines is the budget for a bounded read — `head -n N`, `tail -c N`.
+// Below it the caller has asked for a slice and is left alone; above it they
+// have asked for the file under another name. It is held in lines and
+// converted for a byte flag, so one number tunes both forms.
 type BashRules struct {
 	Enabled       bool     `json:"enabled"`
 	Decision      string   `json:"decision"`
 	TailLines     int      `json:"tail_lines"`
 	CatAboveBytes int64    `json:"cat_above_bytes"`
+	MaxSliceLines int      `json:"max_slice_lines"`
 	Noisy         []string `json:"noisy"`
 }
 

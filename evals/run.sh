@@ -88,6 +88,21 @@ expect_silent "piped command passes through" \
   '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"npm test | tail -5"}}'
 expect_silent "chained command passes through" \
   '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"npm test && npm run build"}}'
+# ...but a chain is not a way to smuggle a whole file into the transcript.
+expect_decision "chained large cat is denied" \
+  "$(printf '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"echo start; cat %s"}}' "$TMP/huge.go")" "deny"
+expect_silent "piped cat in a chain passes through" \
+  "$(printf '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"echo start; cat %s | head -20"}}' "$TMP/huge.go")"
+# A pager with no terminal to page into is cat, and a flag does not shrink a file.
+expect_decision "pager on a large file is denied" \
+  "$(printf '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"less %s"}}' "$TMP/huge.go")" "deny"
+expect_decision "flagged cat is denied" \
+  "$(printf '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"cat -n %s"}}' "$TMP/huge.go")" "deny"
+# A count past the end of the file prints the file.
+expect_decision "oversized slice is denied" \
+  "$(printf '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"head -n 50000 %s"}}' "$TMP/huge.go")" "deny"
+expect_silent "bounded slice passes through" \
+  "$(printf '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"head -20 %s"}}' "$TMP/huge.go")"
 expect_silent "counting search passes through" \
   '{"hook_event_name":"PreToolUse","tool_name":"Grep","tool_input":{"pattern":"x","output_mode":"count"}}'
 expect_silent "garbage stdin passes through" 'not json'
