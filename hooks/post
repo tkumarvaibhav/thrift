@@ -1,0 +1,13 @@
+#!/usr/bin/env sh
+# thrift's PostToolUse entry point.
+#
+# Same fail-open contract as hooks/dispatch: an unbuilt binary, a killed
+# process or a missing plugin root must all end as "do nothing". The tool has
+# already run by the time this fires, so nothing here can undo work — but a
+# hook that errors still interrupts a turn that was otherwise finished.
+[ -n "${THRIFT_OFF}" ] && exit 0
+
+BIN="${CLAUDE_PLUGIN_ROOT:-$(dirname "$0")/..}/bin/thrift"
+[ -x "${BIN}" ] || exit 0
+
+exec "${BIN}" posthook
