@@ -67,7 +67,7 @@ func runHook() int {
 		// defaults rather than losing every rule to one typo.
 		logError(err)
 	}
-	d := dispatch.Run(os.Stdin, os.Stdout, cfg)
+	d := dispatch.Run(os.Stdin, os.Stdout, cfg, stateRoot())
 	if d != nil {
 		// Written after the decision was emitted: bookkeeping must never be
 		// able to change what the dispatcher did.
@@ -116,16 +116,29 @@ func runReport() int {
 	}
 
 	fmt.Printf("thrift ledger — %s\n\n", path)
-	fmt.Printf("  %-14s %13s  %s\n", "BASIS", "INTERVENTIONS", "TOKENS SAVED")
-	fmt.Printf("  %-14s %13d  %d\n", "measured", s.Measured.Interventions, s.Measured.TokensSaved)
-	fmt.Printf("  %-14s %13d  %d\n", "estimated", s.Estimated.Interventions, s.Estimated.TokensSaved)
-	fmt.Printf("  %-14s %13d  %s\n", "unmeasurable", s.Unmeasurable.Interventions, "n/a")
+	// Wide enough for the longest rule name thrift emits; a name that
+	// overflows pushes its own count out of the column and makes the whole
+	// table unreadable.
+	const col = 18
+	fmt.Printf("  %-*s %13s  %s\n", col, "BASIS", "INTERVENTIONS", "TOKENS SAVED")
+	fmt.Printf("  %-*s %13d  %d\n", col, "measured", s.Measured.Interventions, s.Measured.TokensSaved)
+	fmt.Printf("  %-*s %13d  %d\n", col, "estimated", s.Estimated.Interventions, s.Estimated.TokensSaved)
+	fmt.Printf("  %-*s %13d  %s\n", col, "unmeasurable", s.Unmeasurable.Interventions, "n/a")
+	if s.Visual.Interventions > 0 {
+		fmt.Printf("  %-*s %13d  %d\n", col,
+			"  of which img", s.Visual.Interventions, s.Visual.TokensSaved)
+	}
 
 	fmt.Printf("\n  by rule\n")
 	for _, rule := range slices.Sorted(maps.Keys(s.ByRule)) {
-		fmt.Printf("  %-14s %13d\n", rule, s.ByRule[rule])
+		fmt.Printf("  %-*s %13d\n", col, rule, s.ByRule[rule])
 	}
-	fmt.Printf("\n  measured  = the avoided bytes were counted on disk.\n")
+	fmt.Printf("\n  measured  = the avoided cost was counted, not assumed: bytes on disk for\n")
+	fmt.Printf("              text, or 28x28 image patches for pictures.\n")
+	if s.Visual.Interventions > 0 {
+		fmt.Printf("  img       = counted in visual tokens, which are billed directly and so\n")
+		fmt.Printf("              never passed through the bytes-per-token divisor.\n")
+	}
 	fmt.Printf("  estimated = derived from an assumed %d bytes per line.\n", 60)
 	fmt.Printf("  n/a       = the un-rewritten command never ran, so its output size is unknowable.\n")
 	fmt.Printf("\n  These are not added together on purpose: a total would look more\n")

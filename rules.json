@@ -3,7 +3,19 @@
     "enabled": true,
     "cap_above_bytes": 32768,
     "cap_to_lines": 250,
-    "deny_above_bytes": 524288
+    "deny_above_bytes": 524288,
+    "image": {
+      "enabled": true,
+      "tier": "high",
+      "cap_tokens": 1568,
+      "dedupe": true
+    },
+    "pdf": {
+      "enabled": true,
+      "cap_above_bytes": 131072,
+      "cap_to_pages": 5,
+      "deny_above_bytes": 2097152
+    }
   },
   "bash": {
     "enabled": true,
@@ -12,13 +24,32 @@
     "cat_above_bytes": 16384,
     "max_slice_lines": 1000,
     "noisy": [
-      "npm test", "npm run", "npm install", "npm ci", "npx tsc",
-      "yarn", "pnpm", "jest", "vitest", "eslint", "tsc",
-      "go test", "gofmt -l", "golangci-lint",
-      "pytest", "python -m pytest", "pip install",
-      "cargo test", "cargo build", "cargo clippy",
-      "make", "mvn", "gradle", "./gradlew",
-      "docker build", "terraform plan"
+      "npm test",
+      "npm run",
+      "npm install",
+      "npm ci",
+      "npx tsc",
+      "yarn",
+      "pnpm",
+      "jest",
+      "vitest",
+      "eslint",
+      "tsc",
+      "go test",
+      "gofmt -l",
+      "golangci-lint",
+      "pytest",
+      "python -m pytest",
+      "pip install",
+      "cargo test",
+      "cargo build",
+      "cargo clippy",
+      "make",
+      "mvn",
+      "gradle",
+      "./gradlew",
+      "docker build",
+      "terraform plan"
     ]
   },
   "grep": {

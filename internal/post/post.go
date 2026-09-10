@@ -16,6 +16,7 @@ import (
 
 	"github.com/vaibhav/thrift/internal/dispatch"
 	"github.com/vaibhav/thrift/internal/ledger"
+	"github.com/vaibhav/thrift/internal/session"
 )
 
 // Event is the PostToolUse payload Claude Code writes to the hook's stdin.
@@ -56,17 +57,21 @@ func Decide(ev Event, r dispatch.PostRules, store *Store) *Decision {
 	if !r.Enabled {
 		return nil
 	}
-	p, ok := parsePayload(ev.ToolName, ev.ToolResponse)
-	if !ok {
-		return nil
-	}
-
 	// Inside a subagent only the lossless passes run. Absorbing a large output
 	// is the delegate's whole purpose, so trimming or diffing one would defeat
 	// the delegation that was already paid for — but escape sequences and
 	// painted-over progress lines are worth nothing to anybody, and the
 	// subagent is charged for them too.
 	inAgent := ev.AgentID != "" || ev.AgentType != ""
+
+	if !inAgent {
+		recordImage(ev, store)
+	}
+
+	p, ok := parsePayload(ev.ToolName, ev.ToolResponse)
+	if !ok {
+		return nil
+	}
 
 	d := &Decision{}
 	for _, path := range p.paths() {
@@ -153,6 +158,34 @@ func (d *Decision) record(rule string, class dispatch.Class, before, after int) 
 	}
 	d.Rules = append(d.Rules, rule)
 	d.Ledgers = append(d.Ledgers, ledger.Measured("post", rule, string(class), int64(before-after)))
+}
+
+// recordImage notes that the model has been shown an image, so the PreToolUse
+// hook can refuse to send it a second time.
+//
+// This hook is where the note belongs because it is the only one that runs
+// after the tool did: a sighting recorded before the call would survive a read
+// the user went on to deny, and the next read would be refused on the strength
+// of an image that never arrived.
+//
+// It rewrites nothing. An image response is a shape this package does not
+// construct, and the saving is not available here anyway — by the time the
+// bytes exist, they have been paid for.
+func recordImage(ev Event, store *Store) {
+	if ev.ToolName != "Read" {
+		return
+	}
+	var in struct {
+		FilePath string `json:"file_path"`
+	}
+	if err := json.Unmarshal(ev.ToolInput, &in); err != nil || in.FilePath == "" {
+		return
+	}
+	key, ok := dispatch.ImageKey(in.FilePath)
+	if !ok {
+		return
+	}
+	store.Record(session.ImagesFile, key, describe(ev))
 }
 
 // readPath pulls the file a Read names, so a re-read can be recognised.

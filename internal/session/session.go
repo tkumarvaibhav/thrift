@@ -1,4 +1,12 @@
-package post
+// Package session is the on-disk memory of one Claude Code session.
+//
+// It lives outside both hooks because both need it and they need it at
+// different moments: the PostToolUse hook is the only one that knows a tool
+// call succeeded, so it is the only one that may record a sighting, while the
+// PreToolUse hook is the only one that can act on a sighting before the cost
+// is paid. Splitting the record from the lookup is what keeps thrift from
+// telling the model it already has something a failed call never returned.
+package session
 
 import (
 	"crypto/sha256"
@@ -16,9 +24,8 @@ import (
 // Every operation here fails open. A store that cannot be read yields no
 // match, which costs a saving and nothing else.
 
-// seenEntry records where an output was first returned, so a later duplicate
-// can point at it rather than repeat it.
-type seenEntry struct {
+// Entry records where an output was first returned.
+type Entry struct {
 	Ord  int    `json:"ord"`
 	Note string `json:"note"`
 }
@@ -28,9 +35,9 @@ type Store struct {
 	dir string
 }
 
-// OpenStore returns the store for a session, or nil when there is nowhere to
+// Open returns the store for a session, or nil when there is nowhere to
 // keep it. A nil *Store is usable: every method is a no-op on one.
-func OpenStore(root, sessionID string) *Store {
+func Open(root, sessionID string) *Store {
 	if root == "" || sessionID == "" {
 		return nil
 	}
@@ -58,41 +65,85 @@ func safeID(s string) bool {
 	return true
 }
 
-// maxSeen caps the index. It is read and rewritten on every tool call, so an
+// MaxSeen caps the index. It is read and rewritten on every tool call, so an
 // unbounded one turns a long session into quadratic work — the cost of looking
 // for a saving would grow past the saving itself. At the cap the older half is
 // dropped: an output returned a thousand calls ago is the least likely to come
 // back, and forgetting it costs one missed pointer.
-const maxSeen = 1000
+const MaxSeen = 1000
 
 // Seen records an output hash and reports what it displaced, if anything.
 //
 // The write happens whether or not there was a hit, because the first sighting
 // is what a second one will point at.
-func (s *Store) Seen(hash, note string) (seenEntry, bool) {
+func (s *Store) Seen(hash, note string) (Entry, bool) {
 	if s == nil {
-		return seenEntry{}, false
+		return Entry{}, false
 	}
-	path := filepath.Join(s.dir, "seen.json")
-	index := map[string]seenEntry{}
-	if data, err := os.ReadFile(path); err == nil {
-		_ = json.Unmarshal(data, &index) // a corrupt index is an empty one
-	}
+	index := s.index(seenFile)
 	if prev, ok := index[hash]; ok {
 		return prev, true
 	}
+	s.put(seenFile, index, hash, note)
+	return Entry{}, false
+}
 
+// seenFile is the index of output hashes, the original and still the largest
+// use of this store.
+const seenFile = "seen.json"
+
+// index loads one named index. A corrupt or missing one reads as empty, which
+// costs a saving and nothing else.
+func (s *Store) index(file string) map[string]Entry {
+	index := map[string]Entry{}
+	if data, err := os.ReadFile(filepath.Join(s.dir, file)); err == nil {
+		_ = json.Unmarshal(data, &index)
+	}
+	return index
+}
+
+// put adds an entry and trims the index back under the cap, dropping the
+// older half. An entry last seen a thousand calls ago is the least likely to
+// come back, so forgetting it costs one missed pointer.
+func (s *Store) put(file string, index map[string]Entry, key, note string) {
 	next := len(index) + 1
-	if len(index) >= maxSeen {
+	if len(index) >= MaxSeen {
 		for k, v := range index {
-			if v.Ord <= next-maxSeen/2 {
+			if v.Ord <= next-MaxSeen/2 {
 				delete(index, k)
 			}
 		}
 	}
-	index[hash] = seenEntry{Ord: next, Note: note}
-	writeAtomic(path, mustJSON(index))
-	return seenEntry{}, false
+	index[key] = Entry{Ord: next, Note: note}
+	writeAtomic(filepath.Join(s.dir, file), mustJSON(index))
+}
+
+// Lookup reports a sighting without recording one.
+//
+// It exists for the PreToolUse hook, which runs before the call it is
+// deciding about. If looking were also recording, the first read of a file
+// would be remembered even when the user went on to deny it — and the next
+// read would be refused on the grounds that the model already had something
+// it was never shown.
+func (s *Store) Lookup(file, key string) (Entry, bool) {
+	if s == nil {
+		return Entry{}, false
+	}
+	prev, ok := s.index(file)[key]
+	return prev, ok
+}
+
+// Record remembers a sighting under a named index. The PostToolUse hook calls
+// it, because it is the only one that knows the call it describes succeeded.
+func (s *Store) Record(file, key, note string) {
+	if s == nil {
+		return
+	}
+	index := s.index(file)
+	if _, ok := index[key]; ok {
+		return
+	}
+	s.put(file, index, key, note)
 }
 
 // CachedRead returns the content last shown for a path this session.
@@ -118,7 +169,7 @@ func (s *Store) PutRead(path, content string, maxBytes int64) {
 }
 
 func (s *Store) readPath(path string) string {
-	return filepath.Join(s.dir, "reads", hashOf(path))
+	return filepath.Join(s.dir, "reads", HashOf(path))
 }
 
 // writeAtomic replaces a file via a temporary file and a rename, so a hook
@@ -156,7 +207,14 @@ func mustJSON(v any) []byte {
 	return data
 }
 
-func hashOf(s string) string {
+// HashOf is the content key an output is remembered under.
+func HashOf(s string) string {
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:])
 }
+
+// ImagesFile is the index of images a session has actually been shown. It is
+// kept apart from the output-hash index because the two are keyed differently:
+// an output is remembered by its content, an image by its identity on disk,
+// which is all the PreToolUse hook can know before the file is read.
+const ImagesFile = "images.json"

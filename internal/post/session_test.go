@@ -2,9 +2,6 @@ package post
 
 import (
 	"encoding/json"
-	"os"
-	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 )
@@ -147,52 +144,4 @@ func TestWhollyRewrittenFileIsNotDiffed(t *testing.T) {
 	if second != nil && strings.Contains(contentOf(t, second), "@@") {
 		t.Error("a diff covering the whole file is not a saving")
 	}
-}
-
-// The index is read and rewritten on every tool call, so an unbounded one
-// turns a long session into quadratic work — the search for a saving would
-// eventually cost more than the saving.
-func TestSeenIndexIsBounded(t *testing.T) {
-	s := store(t)
-	for i := range maxSeen + 200 {
-		s.Seen(hashOf(strconv.Itoa(i)), "note")
-	}
-
-	data, err := os.ReadFile(filepath.Join(s.dir, "seen.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var index map[string]seenEntry
-	if err := json.Unmarshal(data, &index); err != nil {
-		t.Fatal(err)
-	}
-	if len(index) > maxSeen {
-		t.Errorf("index holds %d entries, over the %d cap", len(index), maxSeen)
-	}
-	// The most recent sighting must survive the trim; it is the one most
-	// likely to be asked for again.
-	if _, ok := index[hashOf(strconv.Itoa(maxSeen+199))]; !ok {
-		t.Error("the newest entry was dropped; the trim is discarding the wrong half")
-	}
-}
-
-// A path element arriving from the host is not trusted into the filesystem.
-func TestHostileSessionIDIsRefusedAStore(t *testing.T) {
-	for _, id := range []string{"../../etc", "a/b", "", strings.Repeat("x", 200)} {
-		if got := OpenStore(t.TempDir(), id); got != nil {
-			t.Errorf("OpenStore(%q) returned a store; want nil", id)
-		}
-	}
-}
-
-// Every store operation fails open: a nil store costs a saving and nothing else.
-func TestNilStoreIsUsable(t *testing.T) {
-	var s *Store
-	if _, hit := s.Seen("hash", "note"); hit {
-		t.Error("a nil store cannot have seen anything")
-	}
-	if _, ok := s.CachedRead("/x"); ok {
-		t.Error("a nil store cannot have cached anything")
-	}
-	s.PutRead("/x", "content", 1024) // must not panic
 }

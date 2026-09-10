@@ -149,3 +149,84 @@ func mustAppend(t *testing.T, path string, e Entry) {
 		t.Fatalf("Append: %v", err)
 	}
 }
+
+func TestVisualTokensEntryCountsTokensNotBytes(t *testing.T) {
+	// An image's saving is known in tokens directly. Passing it through the
+	// bytes-per-token divisor would quarter a number that was already correct.
+	e := VisualTokens("Read", "read.image", "truncating", 4784, 3224)
+	if e.EstTokensSaved != 3224 {
+		t.Errorf("EstTokensSaved = %d; want 3224", e.EstTokensSaved)
+	}
+	if e.BeforeTokens != 4784 {
+		t.Errorf("BeforeTokens = %d; want 4784", e.BeforeTokens)
+	}
+	if e.Unit != UnitVisualTokens {
+		t.Errorf("Unit = %q; want %q", e.Unit, UnitVisualTokens)
+	}
+	if e.Basis != BasisMeasured {
+		t.Errorf("Basis = %q; want %q", e.Basis, BasisMeasured)
+	}
+	if e.SavedBytes != 0 || e.BeforeBytes != 0 {
+		t.Errorf("byte fields = (%d, %d); want both zero — no bytes were counted",
+			e.BeforeBytes, e.SavedBytes)
+	}
+}
+
+func TestByteEntriesStayLabelledAsBytes(t *testing.T) {
+	// The unit has to be legible on every record, not just the new ones, or a
+	// reader cannot tell which column a number belongs in.
+	if got := Measured("Read", "read.delegate", "unsafe", 1024).Unit; got != UnitBytes {
+		t.Errorf("Measured unit = %q; want %q", got, UnitBytes)
+	}
+	if got := Estimated("Read", "read.cap", "truncating", 100, 40).Unit; got != UnitBytes {
+		t.Errorf("Estimated unit = %q; want %q", got, UnitBytes)
+	}
+}
+
+func TestSummarizeCountsVisualTokensAsMeasured(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ledger.jsonl")
+	if err := Append(path, VisualTokens("Read", "read.image", "truncating", 4784, 3224)); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	got, err := Summarize(path)
+	if err != nil {
+		t.Fatalf("Summarize: %v", err)
+	}
+	if got.Measured.TokensSaved != 3224 {
+		t.Errorf("Measured.TokensSaved = %d; want 3224", got.Measured.TokensSaved)
+	}
+	if got.Measured.Interventions != 1 {
+		t.Errorf("Measured.Interventions = %d; want 1", got.Measured.Interventions)
+	}
+}
+
+func TestSummarizeSplitsOutVisualTokens(t *testing.T) {
+	// Both are measured, but one was counted in bytes and the other in
+	// patches. A report that cannot tell them apart cannot explain either.
+	path := filepath.Join(t.TempDir(), "ledger.jsonl")
+	for _, e := range []Entry{
+		Measured("Read", "read.delegate", "unsafe", 4096),
+		VisualTokens("Read", "read.image", "unsafe", 4784, 3224),
+	} {
+		if err := Append(path, e); err != nil {
+			t.Fatalf("Append: %v", err)
+		}
+	}
+
+	got, err := Summarize(path)
+	if err != nil {
+		t.Fatalf("Summarize: %v", err)
+	}
+	if got.Measured.Interventions != 2 {
+		t.Errorf("Measured.Interventions = %d; want 2", got.Measured.Interventions)
+	}
+	if want := int64(4096/4 + 3224); got.Measured.TokensSaved != want {
+		t.Errorf("Measured.TokensSaved = %d; want %d", got.Measured.TokensSaved, want)
+	}
+	if got.Visual.Interventions != 1 {
+		t.Errorf("Visual.Interventions = %d; want 1", got.Visual.Interventions)
+	}
+	if got.Visual.TokensSaved != 3224 {
+		t.Errorf("Visual.TokensSaved = %d; want 3224", got.Visual.TokensSaved)
+	}
+}

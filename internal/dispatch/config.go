@@ -18,6 +18,46 @@ type ReadRules struct {
 	CapAboveBytes  int64 `json:"cap_above_bytes"`
 	CapToLines     int   `json:"cap_to_lines"`
 	DenyAboveBytes int64 `json:"deny_above_bytes"`
+
+	Image ImageRules `json:"image"`
+	PDF   PDFRules   `json:"pdf"`
+}
+
+// ImageRules bounds reads of images, which the byte thresholds above cannot
+// price: a picture's cost has nothing to do with its weight on disk. A
+// heavily-compressed 200KB screenshot and a 4MB PNG of the same dimensions
+// cost the same number of visual tokens, and a 50KB icon costs almost nothing.
+// So this rule measures the only thing that bills — the pixel grid — and is
+// held in tokens rather than bytes throughout.
+type ImageRules struct {
+	Enabled bool `json:"enabled"`
+	// Tier is the model's native image budget, "high" (Claude 4.7 and later)
+	// or "standard". It matters because the same screenshot costs roughly
+	// three times as much on the high tier, which is the one in current use.
+	Tier string `json:"tier"`
+	// CapTokens is the visual-token budget above which an image is worth
+	// resizing before it is read.
+	CapTokens int64 `json:"cap_tokens"`
+	// Dedupe denies a re-read of an image the session has already seen
+	// unchanged. It is separate from the byte-level dedupe in the PostToolUse
+	// hook, which cannot act on an image at all.
+	Dedupe bool `json:"dedupe"`
+}
+
+// PDFRules bounds reads of PDFs, which are the most expensive thing a Read can
+// return: every page is billed twice, once as extracted text and again as the
+// rasterised image the text was extracted from. A page costs 1,500-3,000 text
+// tokens on top of its visual tokens, so a document that looks modest on disk
+// can cost more than every source file in a repository.
+//
+// The thresholds are in bytes because a page count cannot be had from a stat,
+// and a rule that scans a file to decide whether to read it has already paid
+// half the price it was trying to avoid.
+type PDFRules struct {
+	Enabled        bool  `json:"enabled"`
+	CapAboveBytes  int64 `json:"cap_above_bytes"`
+	CapToPages     int   `json:"cap_to_pages"`
+	DenyAboveBytes int64 `json:"deny_above_bytes"`
 }
 
 // BashRules bounds shell commands.

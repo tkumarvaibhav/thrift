@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 
 	"github.com/vaibhav/thrift/internal/ledger"
+	"github.com/vaibhav/thrift/internal/session"
 )
 
 // assumedBytesPerLine converts a line cap into an approximate byte count so a
@@ -82,6 +83,14 @@ type Decision struct {
 // rule all fail open. The hook runs ahead of every tool call in the session,
 // so interfering on uncertainty is far more expensive than missing a saving.
 func Decide(ev Event, cfg Config) *Decision {
+	return DecideSession(ev, cfg, nil)
+}
+
+// DecideSession is Decide with access to what this session has already been
+// shown. Only the rules that turn on repetition need it, and every one of them
+// passes through when it is nil, so a caller with no session state loses
+// savings rather than correctness.
+func DecideSession(ev Event, cfg Config, st *session.Store) *Decision {
 	// Absorbing bulk reads is a subagent's whole purpose. Applying the rules
 	// inside one would deny the delegate, which would then delegate again.
 	if ev.AgentID != "" || ev.AgentType != "" {
@@ -89,7 +98,7 @@ func Decide(ev Event, cfg Config) *Decision {
 	}
 	switch ev.ToolName {
 	case "Read":
-		return decideRead(ev, cfg.Read)
+		return decideRead(ev, cfg.Read, st)
 	case "Bash":
 		return decideBash(ev, cfg.Bash)
 	case "Grep":

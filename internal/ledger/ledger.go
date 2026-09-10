@@ -26,6 +26,18 @@ const (
 	BasisUnmeasurable = "unmeasurable"
 )
 
+// Unit records what a saving was counted in. Bytes are the default because
+// almost everything thrift avoids is text on its way to a tokenizer. Images
+// are the exception: they are billed per 28x28 patch, so their saving is
+// already a token count and must not be put through the divisor below.
+//
+// A record written before this field existed decodes with an empty Unit. That
+// is read as bytes, which is what every such record was.
+const (
+	UnitBytes        = "bytes"
+	UnitVisualTokens = "visual_tokens"
+)
+
 // bytesPerToken is the crude divisor used to express bytes as tokens. It is a
 // stated assumption, not a measurement, which is why SavedBytes stays on every
 // record: a reader who distrusts the divisor can recompute without it.
@@ -37,8 +49,10 @@ type Entry struct {
 	Rule           string `json:"rule"`
 	Class          string `json:"class"`
 	Basis          string `json:"basis"`
+	Unit           string `json:"unit,omitempty"`
 	BeforeBytes    int64  `json:"before_bytes,omitempty"`
 	SavedBytes     int64  `json:"saved_bytes,omitempty"`
+	BeforeTokens   int64  `json:"before_tokens,omitempty"`
 	EstTokensSaved int64  `json:"est_tokens_saved,omitempty"`
 }
 
@@ -48,6 +62,7 @@ func Measured(tool, rule, class string, saved int64) Entry {
 	return Entry{
 		TS: now(), Tool: tool, Rule: rule, Class: class,
 		Basis:          BasisMeasured,
+		Unit:           UnitBytes,
 		BeforeBytes:    saved,
 		SavedBytes:     saved,
 		EstTokensSaved: saved / bytesPerToken,
@@ -60,9 +75,29 @@ func Estimated(tool, rule, class string, before, saved int64) Entry {
 	return Entry{
 		TS: now(), Tool: tool, Rule: rule, Class: class,
 		Basis:          BasisEstimated,
+		Unit:           UnitBytes,
 		BeforeBytes:    before,
 		SavedBytes:     saved,
 		EstTokensSaved: saved / bytesPerToken,
+	}
+}
+
+// VisualTokens records an intervention priced in image tokens rather than
+// bytes.
+//
+// It is a measured saving despite never touching the file's contents: an
+// image's cost is a function of its header, so the tokens avoided were
+// computed from the same two numbers the API bills from. The byte fields stay
+// empty on purpose — no bytes were counted, and filling them with the file
+// size would invite a reader to add a picture's weight on disk to a saving
+// denominated in patches.
+func VisualTokens(tool, rule, class string, before, saved int64) Entry {
+	return Entry{
+		TS: now(), Tool: tool, Rule: rule, Class: class,
+		Basis:          BasisMeasured,
+		Unit:           UnitVisualTokens,
+		BeforeTokens:   before,
+		EstTokensSaved: saved,
 	}
 }
 
@@ -99,10 +134,16 @@ type Bucket struct {
 }
 
 type Summary struct {
-	Measured     Bucket         `json:"measured"`
-	Estimated    Bucket         `json:"estimated"`
-	Unmeasurable Bucket         `json:"unmeasurable"`
-	ByRule       map[string]int `json:"by_rule"`
+	Measured     Bucket `json:"measured"`
+	Estimated    Bucket `json:"estimated"`
+	Unmeasurable Bucket `json:"unmeasurable"`
+	// Visual is the share of Measured that was counted in image patches
+	// rather than bytes. It is a subset, not a fourth basis: those entries
+	// are already inside Measured and are broken out only so a reader can see
+	// which half of the number never went through the bytes-per-token
+	// divisor.
+	Visual Bucket         `json:"visual"`
+	ByRule map[string]int `json:"by_rule"`
 }
 
 // Summarize folds a ledger into per-basis buckets. There is deliberately no
@@ -131,6 +172,10 @@ func Summarize(path string) (Summary, error) {
 		case BasisMeasured:
 			s.Measured.Interventions++
 			s.Measured.TokensSaved += e.EstTokensSaved
+			if e.Unit == UnitVisualTokens {
+				s.Visual.Interventions++
+				s.Visual.TokensSaved += e.EstTokensSaved
+			}
 		case BasisEstimated:
 			s.Estimated.Interventions++
 			s.Estimated.TokensSaved += e.EstTokensSaved

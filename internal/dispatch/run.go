@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+
+	"github.com/vaibhav/thrift/internal/session"
 )
 
 // maxEventBytes bounds how much of stdin is read. A hook that blocks on a
@@ -20,6 +22,25 @@ func Defaults() Config {
 			CapAboveBytes:  32 * 1024,
 			CapToLines:     250,
 			DenyAboveBytes: 512 * 1024,
+			Image: ImageRules{
+				Enabled: true,
+				Tier:    "high",
+				// The standard tier's own budget. An image over it is one the
+				// high tier is charging roughly triple for, and resizing to
+				// exactly this point buys back the difference while leaving
+				// the model the detail every prior generation worked from.
+				CapTokens: 1568,
+				Dedupe:    true,
+			},
+			PDF: PDFRules{
+				Enabled: true,
+				// Low, because a PDF's bytes understate it: pages are billed
+				// as text and as images both, so even a small file can cost
+				// more than the largest source file in a repository.
+				CapAboveBytes:  128 * 1024,
+				CapToPages:     5,
+				DenyAboveBytes: 2 * 1024 * 1024,
+			},
 		},
 		Bash: BashRules{
 			Enabled:       true,
@@ -89,11 +110,15 @@ type response struct {
 // Run reads one PreToolUse event, writes the response, and returns the
 // decision taken (nil for a passthrough) so the caller can record it.
 //
+// stateRoot is where this session's memory of what it has already been shown
+// is kept. An empty one is not an error: the rules that need it pass through,
+// so the hook loses savings rather than correctness.
+//
 // It returns no error by design. This runs ahead of every tool call in the
 // session: a hook that fails closed does not save tokens, it stops work. Every
 // failure path — unreadable stdin, unparseable event, even a panic in the rule
 // engine — ends as a silent passthrough.
-func Run(in io.Reader, out io.Writer, cfg Config) (d *Decision) {
+func Run(in io.Reader, out io.Writer, cfg Config, stateRoot string) (d *Decision) {
 	defer func() {
 		if r := recover(); r != nil {
 			d = nil
@@ -108,7 +133,7 @@ func Run(in io.Reader, out io.Writer, cfg Config) (d *Decision) {
 	if err := json.Unmarshal(raw, &ev); err != nil {
 		return nil
 	}
-	decision := Decide(ev, cfg)
+	decision := DecideSession(ev, cfg, session.Open(stateRoot, ev.SessionID))
 	if decision == nil {
 		return nil
 	}

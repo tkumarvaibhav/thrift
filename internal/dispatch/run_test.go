@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/vaibhav/thrift/internal/session"
 )
 
 // hookResponse mirrors the JSON contract Claude Code expects back on stdout.
@@ -22,7 +24,7 @@ type hookResponse struct {
 func runHook(t *testing.T, stdin string, cfg Config) (string, *Decision) {
 	t.Helper()
 	var out bytes.Buffer
-	d := Run(strings.NewReader(stdin), &out, cfg)
+	d := Run(strings.NewReader(stdin), &out, cfg, "")
 	return out.String(), d
 }
 
@@ -153,5 +155,51 @@ func TestLoadConfigReportsMalformedFile(t *testing.T) {
 	}
 	if !cfg.Read.Enabled {
 		t.Error("a malformed file must still yield working defaults")
+	}
+}
+
+// The hook only has session memory if it is told where to keep it. Without a
+// state root the repetition rules pass through, which costs a saving; with one
+// they fire, which is the whole point of recording sightings in the first
+// place.
+func TestRunUsesSessionMemoryWhenGivenAStateRoot(t *testing.T) {
+	path := writePNG(t, "shot.png", 1200, 900)
+	root := t.TempDir()
+	key, ok := ImageKey(path)
+	if !ok {
+		t.Fatal("ImageKey failed on a real file")
+	}
+	session.Open(root, "session-1").Record(session.ImagesFile, key, "Read("+path+")")
+
+	stdin := `{"hook_event_name":"PreToolUse","session_id":"session-1",` +
+		`"tool_name":"Read","tool_input":{"file_path":"` + path + `"}}`
+
+	var out bytes.Buffer
+	d := Run(strings.NewReader(stdin), &out, dedupeConfig(), root)
+	if d == nil {
+		t.Fatal("want the recorded image to be refused")
+	}
+	if d.Rule != "read.image.dedupe" {
+		t.Errorf("Rule = %q; want read.image.dedupe", d.Rule)
+	}
+
+	var got hookResponse
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("stdout is not valid JSON: %v\ngot: %s", err, out.String())
+	}
+	if got.HookSpecificOutput.PermissionDecision != "deny" {
+		t.Errorf("PermissionDecision = %q; want deny",
+			got.HookSpecificOutput.PermissionDecision)
+	}
+}
+
+func TestRunWithoutAStateRootStillWorks(t *testing.T) {
+	path := writePNG(t, "shot.png", 1200, 900)
+	stdin := `{"hook_event_name":"PreToolUse","session_id":"session-1",` +
+		`"tool_name":"Read","tool_input":{"file_path":"` + path + `"}}`
+
+	var out bytes.Buffer
+	if d := Run(strings.NewReader(stdin), &out, dedupeConfig(), ""); d != nil {
+		t.Fatalf("Run = %+v; want passthrough with nowhere to keep session memory", d)
 	}
 }

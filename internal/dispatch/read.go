@@ -8,25 +8,33 @@ import (
 	"strings"
 
 	"github.com/vaibhav/thrift/internal/ledger"
+	"github.com/vaibhav/thrift/internal/session"
 )
 
 // readInput is the subset of the Read tool's arguments the rule reasons about.
 // Limit and Offset are pointers so that "absent" is distinguishable from zero:
 // either one being present means the caller has already bounded the read.
 type readInput struct {
-	FilePath string `json:"file_path"`
-	Limit    *int   `json:"limit"`
-	Offset   *int   `json:"offset"`
+	FilePath string  `json:"file_path"`
+	Limit    *int    `json:"limit"`
+	Offset   *int    `json:"offset"`
+	Pages    *string `json:"pages"`
+
+	// Raw is the call's original arguments, kept so a rewrite can merge into
+	// them rather than rebuild them from the fields above — which would drop
+	// every argument this struct does not name.
+	Raw json.RawMessage `json:"-"`
 }
 
 // renderedExts are file types the Read tool renders rather than returning as
-// lines. A line limit means nothing for them, so they are left alone.
+// lines. A line limit means nothing for them, so the byte rules leave them
+// alone — the ones that are worth pricing have their own rules instead.
 var renderedExts = map[string]bool{
 	".png": true, ".jpg": true, ".jpeg": true, ".gif": true,
 	".webp": true, ".bmp": true, ".pdf": true, ".ipynb": true,
 }
 
-func decideRead(ev Event, r ReadRules) *Decision {
+func decideRead(ev Event, r ReadRules, st *session.Store) *Decision {
 	if !r.Enabled {
 		return nil
 	}
@@ -34,12 +42,21 @@ func decideRead(ev Event, r ReadRules) *Decision {
 	if err := json.Unmarshal(ev.ToolInput, &in); err != nil {
 		return nil
 	}
+	in.Raw = ev.ToolInput
 	// An explicit limit or offset is deliberate intent; bounding it further
 	// would silently defeat a caller who is already paging through the file.
 	if in.FilePath == "" || in.Limit != nil || in.Offset != nil {
 		return nil
 	}
-	if renderedExts[strings.ToLower(filepath.Ext(in.FilePath))] {
+	// Images and PDFs are priced by their own rules: neither cost has
+	// anything to do with the file's size on disk, which is all the byte
+	// thresholds below can see.
+	switch ext := strings.ToLower(filepath.Ext(in.FilePath)); {
+	case imageExts[ext]:
+		return decideImage(in.FilePath, r.Image, st)
+	case ext == ".pdf":
+		return decidePDF(in, r.PDF)
+	case renderedExts[ext]:
 		return nil
 	}
 	fi, err := os.Stat(in.FilePath)
