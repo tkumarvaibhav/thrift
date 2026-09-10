@@ -8,9 +8,10 @@ import (
 	"strings"
 )
 
-// Finding is one competing PreToolUse hook.
+// Finding is one competing hook, on the event it competes for.
 type Finding struct {
 	Path    string
+	Event   string
 	Matcher string
 	Command string
 }
@@ -25,12 +26,27 @@ type settingsFile struct {
 	} `json:"hooks"`
 }
 
-// ScanSettings reports PreToolUse hooks other than thrift's own.
+// contendedEvents are the two events where another hook does not merely run
+// alongside thrift but changes what thrift's own output does.
 //
-// This is thrift's most important diagnostic because the failure it finds is
-// invisible: when several PreToolUse hooks fire, updatedInput is dropped
+// PreToolUse: when several fire, updatedInput is dropped
 // (anthropics/claude-code#15897), so every rewrite silently becomes a no-op
 // while the plugin still reports itself as installed and healthy.
+//
+// PostToolUse: hooks run in parallel against the *original* output and their
+// replacements compete last-write-wins. The stakes are higher than a lost
+// saving — if the other hook redacts a secret and thrift's rewrite lands last,
+// the redaction is discarded. That is why thrift never emits a rewrite it did
+// not shorten, and why this warning names the risk rather than the no-op.
+var contendedEvents = []string{"PreToolUse", "PostToolUse"}
+
+// ScanSettings reports hooks other than thrift's own on the events where
+// several hooks interfere with each other.
+//
+// This is thrift's most important diagnostic because the failures it finds are
+// invisible: nothing errors, the plugin still looks healthy, and the only
+// symptom is that it silently stops working — or, on PostToolUse, that someone
+// else's redaction silently stops working.
 //
 // A file that is missing, unreadable or malformed yields no findings. This is
 // a diagnostic, not a validator, and a parse error in someone else's settings
@@ -46,12 +62,16 @@ func ScanSettings(paths ...string) []Finding {
 		if err := json.Unmarshal(data, &s); err != nil {
 			continue
 		}
-		for _, entry := range s.Hooks["PreToolUse"] {
-			for _, h := range entry.Hooks {
-				if h.Command == "" || isThrift(h.Command) {
-					continue
+		for _, event := range contendedEvents {
+			for _, entry := range s.Hooks[event] {
+				for _, h := range entry.Hooks {
+					if h.Command == "" || isThrift(h.Command) {
+						continue
+					}
+					out = append(out, Finding{
+						Path: path, Event: event, Matcher: entry.Matcher, Command: h.Command,
+					})
 				}
-				out = append(out, Finding{Path: path, Matcher: entry.Matcher, Command: h.Command})
 			}
 		}
 	}
@@ -64,5 +84,7 @@ func ScanSettings(paths ...string) []Finding {
 // positive here costs a warning that is not printed; a false negative costs a
 // warning that is, so the heuristic leans towards recognising ourselves.
 func isThrift(command string) bool {
-	return strings.Contains(command, "thrift") || strings.Contains(command, "hooks/dispatch")
+	return strings.Contains(command, "thrift") ||
+		strings.Contains(command, "hooks/dispatch") ||
+		strings.Contains(command, "hooks/post")
 }

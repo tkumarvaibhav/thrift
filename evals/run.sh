@@ -86,8 +86,12 @@ expect_decision "unbounded content search is capped" \
 # The correctness guard: calls the caller already shaped must come back untouched.
 expect_silent "piped command passes through" \
   '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"npm test | tail -5"}}'
-expect_silent "chained command passes through" \
-  '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"npm test && npm run build"}}'
+# A chain that runs a noisy program is still that program: the prefix rule
+# recognises `cd x && npm test` as an npm test, which is the whole point of it.
+expect_decision "chained noisy command is wrapped" \
+  '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"npm test && npm run build"}}' "ask"
+expect_silent "chain of quiet commands passes through" \
+  '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"git status && git log --oneline -5"}}'
 # ...but a chain is not a way to smuggle a whole file into the transcript.
 expect_decision "chained large cat is denied" \
   "$(printf '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"echo start; cat %s"}}' "$TMP/huge.go")" "deny"
@@ -119,11 +123,66 @@ else
   ok "deny carries no updatedInput"
 fi
 
-step "latency budget"
-if THRIFT_LEDGER="$TMP/ledger.jsonl" ./bin/thrift doctor | grep latency | grep -q '^  OK'; then
-  ok "$(THRIFT_LEDGER="$TMP/ledger.jsonl" ./bin/thrift doctor | grep latency | sed 's/^ *OK *latency *//')"
+step "post fixtures"
+# The PostToolUse engine has the output in hand, so its assertions are about
+# what came back rather than what was predicted.
+posthook() { printf '%s' "$1" | THRIFT_LEDGER="$TMP/ledger.jsonl" THRIFT_STATE="$TMP/state" ./bin/thrift posthook; }
+
+# Lines that all differ, so the lossless run-collapsing pass has nothing to do
+# and the trim is what acts, and comfortably past the 16KB trim threshold —
+# under it the engine is supposed to leave the output alone.
+BIG=$(awk 'BEGIN{for(i=0;i<600;i++) printf "build output line %d compiling some/package/path/number_%d.go %s\n", i, i, substr("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",1,i%30)}')
+bash_resp() { jq -cn --arg s "$1" \
+  '{hook_event_name:"PostToolUse",session_id:"e1",tool_name:"Bash",tool_input:{command:"make"},tool_response:{stdout:$s,stderr:"",interrupted:false,isImage:false,noOutputExpected:false}}'; }
+
+out=$(posthook "$(bash_resp "$BIG")")
+if printf '%s' "$out" | jq -e '.hookSpecificOutput.updatedToolOutput.stdout | contains("thrift elided")' >/dev/null 2>&1; then
+  ok "large output is trimmed and says so"
 else
-  bad "dispatcher exceeds its 15ms budget"
+  bad "large output was not trimmed: $out"
+fi
+
+# The host validates the replacement against the tool's own output schema and
+# rejects one that does not match, so every sibling field must survive.
+if printf '%s' "$out" | jq -e '.hookSpecificOutput.updatedToolOutput | has("stderr") and has("interrupted") and has("isImage")' >/dev/null 2>&1; then
+  ok "rewrite preserves the response shape"
+else
+  bad "rewrite dropped a field the host requires"
+fi
+
+# An identity rewrite is not a harmless no-op: PostToolUse hooks run in
+# parallel on the original output and compete last-write-wins, so one landing
+# after another hook's redaction discards it.
+out=$(posthook "$(bash_resp "hi")")
+[ -z "$out" ] && ok "cheap output is not rewritten at all" || bad "identity rewrite emitted: $out"
+
+# Absorbing a large output is a subagent's whole purpose.
+sub=$(posthook "$(jq -cn --arg s "$BIG" \
+  '{hook_event_name:"PostToolUse",session_id:"e1",agent_id:"a1",agent_type:"general-purpose",tool_name:"Bash",tool_input:{command:"make"},tool_response:{stdout:$s,stderr:""}}')")
+if printf '%s' "$sub" | jq -e '.hookSpecificOutput.updatedToolOutput.stdout | contains("thrift elided")' >/dev/null 2>&1; then
+  bad "a subagent's read was trimmed; delegation was already paid for"
+else
+  ok "subagent output is not trimmed"
+fi
+
+# Edit returns the whole original file so the host can apply the next edit.
+out=$(posthook "$(jq -cn --arg s "$BIG" '{hook_event_name:"PostToolUse",session_id:"e1",tool_name:"Edit",tool_input:{file_path:"/x.go"},tool_response:{filePath:"/x.go",originalFile:$s}}')")
+[ -z "$out" ] && ok "stateful tool output passes through" || bad "Edit output was rewritten: $out"
+
+expect_post_silent() { # name, json
+  out=$(posthook "$2")
+  [ -z "$out" ] && ok "$1" || bad "$1: expected passthrough, got $out"
+}
+expect_post_silent "garbage stdin passes through" 'not json'
+expect_post_silent "empty response passes through" '{"hook_event_name":"PostToolUse","tool_name":"Bash"}'
+
+step "latency budget"
+if THRIFT_LEDGER="$TMP/ledger.jsonl" ./bin/thrift doctor | grep -E 'latency|  post ' | grep -qv '^  OK'; then
+  bad "a hot path exceeds its budget"
+  THRIFT_LEDGER="$TMP/ledger.jsonl" ./bin/thrift doctor | grep -E 'latency|  post '
+else
+  THRIFT_LEDGER="$TMP/ledger.jsonl" ./bin/thrift doctor \
+    | grep -E 'latency|  post ' | sed 's/^ *OK *//' | while read -r line; do ok "$line"; done
 fi
 
 step "resident footprint"

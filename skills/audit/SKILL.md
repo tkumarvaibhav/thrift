@@ -9,13 +9,26 @@ The dispatcher bounds *per-call* cost. This skill finds the *per-session* cost:
 tokens charged on *every* request before any tool runs. These are the highest
 yield-per-hour fixes available, and each is fixed once.
 
+```bash
+thrift audit
+```
+
+That measures from disk what can be measured — instruction files, the
+frontmatter of every installed skill and agent, configured MCP servers,
+SessionStart hooks — and prints them largest first with the fix for each. Start
+there, then use the checklist below for what a file scan cannot see.
+
 ## Report, then propose. Never apply unasked.
 
 Check each, and quote the size you measured rather than a rule of thumb:
 
-1. **MCP servers.** `/context` shows tool schemas per server. An unused server
-   costs its whole schema on every request. Propose disconnecting it, or
-   enabling on-demand tool search so schemas load only when needed.
+1. **MCP servers.** `thrift audit` reports these **unpriced** on purpose: the
+   schemas live in the servers, not in the file naming them, so a byte count
+   from disk would be invented. `/context` has the real per-server figures —
+   read them from there. An unused server costs its whole schema on every
+   request. Propose disconnecting it, or enabling on-demand tool search so
+   schemas load only when needed. A server with `alwaysLoad` set has opted out
+   of that deferral and pays in full every turn.
 2. **CLAUDE.md.** `wc -l CLAUDE.md`. Past ~200 lines, look for content the
    model can infer from the repo itself — directory listings, obvious
    conventions, restated framework behaviour. Conditional guidance belongs in a
@@ -28,6 +41,10 @@ Check each, and quote the size you measured rather than a rule of thumb:
    a net loss — including this one.
 5. **Subagent model routing.** Is `CLAUDE_CODE_SUBAGENT_MODEL` set? Delegated
    work priced at the main model's rate throws away most of delegation's value.
+6. **Prompt cache.** `thrift cache` reports the hit ratio across past sessions.
+   Cached input is billed at a tenth of the base rate, so a low ratio is
+   usually worth more than any single item above it — and unlike them it is a
+   symptom, not a setting. Look for what is changing a stable prefix mid-session.
 
 ## Output
 

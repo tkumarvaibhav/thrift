@@ -8,6 +8,7 @@ type Config struct {
 	Read ReadRules `json:"read"`
 	Bash BashRules `json:"bash"`
 	Grep GrepRules `json:"grep"`
+	Post PostRules `json:"post"`
 }
 
 // ReadRules bounds the Read tool. Thresholds are in bytes so a decision costs
@@ -42,4 +43,30 @@ type BashRules struct {
 type GrepRules struct {
 	Enabled   bool `json:"enabled"`
 	HeadLimit int  `json:"head_limit"`
+}
+
+// PostRules bounds tool output after the tool has run.
+//
+// These thresholds are in bytes of returned text rather than of a file on
+// disk, because at PostToolUse the output exists and can be counted. That is
+// also why the rules here can be stricter than their PreToolUse counterparts
+// without being riskier: a rule that only acts on output it has measured
+// cannot misfire on a command that turned out to print three lines.
+//
+// Clean is separated from the rest because it is the only lossless pass. It
+// removes escape sequences and painted-over progress lines — bytes that were
+// never information — so it alone is allowed to run inside a subagent, and it
+// alone may be silent.
+type PostRules struct {
+	Enabled        bool  `json:"enabled"`
+	Clean          bool  `json:"clean"`
+	Dedupe         bool  `json:"dedupe"`
+	DiffReads      bool  `json:"diff_reads"`
+	TrimAboveBytes int64 `json:"trim_above_bytes"`
+	HeadLines      int   `json:"head_lines"`
+	TailLines      int   `json:"tail_lines"`
+	// MaxCacheBytes caps what a session will keep on disk per file to diff a
+	// re-read against. Above it a file is not cached at all, so a re-read shows
+	// in full rather than against a baseline that was itself incomplete.
+	MaxCacheBytes int64 `json:"max_cache_bytes"`
 }

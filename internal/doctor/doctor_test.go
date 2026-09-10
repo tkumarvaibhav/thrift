@@ -56,17 +56,44 @@ func TestThriftsOwnHookIsNotReported(t *testing.T) {
 	}
 }
 
-func TestOtherHookEventsAreIgnored(t *testing.T) {
+// PostToolUse hooks contend too, and their failure is worse than a lost
+// rewrite: they run in parallel against the original output and their
+// replacements compete last-write-wins, so a rewrite landing after another
+// hook's redaction discards the redaction.
+func TestCompetingPostToolUseHookIsReported(t *testing.T) {
 	path := writeSettings(t, `{
 	  "hooks": {
-	    "PostToolUse": [{"hooks": [{"type": "command", "command": "/bin/anything"}]}],
-	    "SessionStart": [{"hooks": [{"type": "command", "command": "/bin/other"}]}]
+	    "PostToolUse": [
+	      {"hooks": [{"type": "command", "command": "/plugins/thrift/hooks/post"}]},
+	      {"hooks": [{"type": "command", "command": "/usr/local/bin/redact-secrets"}]}
+	    ]
 	  }
 	}`)
 
-	// Only PreToolUse hooks contend over updatedInput.
+	got := ScanSettings(path)
+	if len(got) != 1 {
+		t.Fatalf("got %d findings, want 1: %+v", len(got), got)
+	}
+	if got[0].Event != "PostToolUse" {
+		t.Errorf("event = %q, want PostToolUse", got[0].Event)
+	}
+	if got[0].Command != "/usr/local/bin/redact-secrets" {
+		t.Errorf("command = %q; thrift's own post hook must not be flagged", got[0].Command)
+	}
+}
+
+// Only the two events where hooks interfere with each other are contended.
+// Everything else may have as many hooks as it likes.
+func TestUncontendedHookEventsAreIgnored(t *testing.T) {
+	path := writeSettings(t, `{
+	  "hooks": {
+	    "SessionStart": [{"hooks": [{"type": "command", "command": "/bin/other"}]}],
+	    "Stop": [{"hooks": [{"type": "command", "command": "/bin/another"}]}]
+	  }
+	}`)
+
 	if got := ScanSettings(path); len(got) != 0 {
-		t.Errorf("only PreToolUse contends, got %+v", got)
+		t.Errorf("only PreToolUse and PostToolUse contend, got %+v", got)
 	}
 }
 

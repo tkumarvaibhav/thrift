@@ -10,11 +10,19 @@ import (
 	"github.com/vaibhav/thrift/internal/ledger"
 )
 
-// shapedTokens mark a command the caller has already composed. A redirect, a
-// pipe, a chain or a substitution may be load-bearing, and wrapping one
-// changes what the command means rather than only how much it prints — so a
-// command containing any of these is never rewritten.
-var shapedTokens = []string{"|", ">", "<", "&&", "||", ";", "`", "$("}
+// shapedTokens mark output the caller has already dealt with. A pipe hands it
+// to something that reduces it, and a redirect keeps it out of the transcript
+// altogether; either way a trim has nothing left to save. Everything else a
+// command can carry — a chain, an environment prefix, a wrapper — changes what
+// runs rather than how much of it is printed, and is wrapped like any other
+// command: the rewrite groups the whole line with braces, so a chain still
+// runs as a chain and a `cd` still lands in the calling shell.
+//
+// `2>&1` reads as a redirect here and so exempts the command it appears in.
+// That is a false negative, and a deliberate one: telling a file redirect from
+// a descriptor dup needs a parser, and thrift fails open on what it cannot
+// read.
+var shapedTokens = []string{"|", ">"}
 
 // dumpers put a file into the transcript whole. A pager with no terminal to
 // page into prints everything and exits, so `less` and `more` cost exactly
@@ -48,10 +56,18 @@ func decideBash(ev Event, b BashRules) *Decision {
 	if d := denyLargeCat(cmd, b); d != nil {
 		return d
 	}
-	if isShaped(cmd) {
+	segs := splitSegments(cmd)
+	if segs == nil {
 		return nil
 	}
-	if !isNoisy(cmd, b.Noisy) {
+	// The rewrite wraps the whole line, so it is all or none: one link whose
+	// output the caller has already shaped exempts the command it is part of.
+	for _, seg := range segs {
+		if isShaped(seg) {
+			return nil
+		}
+	}
+	if !isNoisy(segs, b.Noisy) {
 		return nil
 	}
 	merged := mergeInput(ev.ToolInput, map[string]any{"command": trimCommand(cmd, b.TailLines)})
@@ -74,22 +90,137 @@ func decideBash(ev Event, b BashRules) *Decision {
 	}
 }
 
-func isShaped(cmd string) bool {
+// isShaped reports whether one link has already had its output dealt with. It
+// runs per link and not per line so that `||`, which carries the pipe
+// character without being a pipe, is read as the separator it is.
+func isShaped(seg string) bool {
 	for _, tok := range shapedTokens {
-		if strings.Contains(cmd, tok) {
+		if strings.Contains(seg, tok) {
 			return true
 		}
 	}
 	return false
 }
 
-func isNoisy(cmd string, noisy []string) bool {
-	for _, prefix := range noisy {
-		if cmd == prefix || strings.HasPrefix(cmd, prefix+" ") {
+// isNoisy reports whether any link of a command runs a program known to print
+// at length.
+//
+// It reads the links rather than the line, because the line is almost never
+// the program. A test suite arrives as `cd repo && mvn test`, with a JAVA_HOME
+// in front of it and a timeout around it, and a prefix test against the whole
+// string sees none of those as Maven — which is how this rule came to fire on
+// 3 of one session's 155 commands while a dozen Maven runs went past it. One
+// noisy link is enough: the trim wraps the whole command either way.
+func isNoisy(segs []string, noisy []string) bool {
+	for _, seg := range segs {
+		if runsNoisyProgram(seg, noisy) {
 			return true
 		}
 	}
 	return false
+}
+
+// runsNoisyProgram tests one link against the noisy list, having stepped over
+// whatever stands between the shell and the program: environment assignments,
+// and the runners that exec the rest of the line.
+//
+// The tokens are re-joined for the test because the list is written the way a
+// caller would type it — "go test", "python -m pytest" — so a match has to
+// span more than the first word. The join loses the caller's quoting, which
+// costs nothing here: the rewrite wraps the original command text, never this.
+func runsNoisyProgram(seg string, noisy []string) bool {
+	f := stripPrefixes(fields(seg))
+	if len(f) == 0 {
+		return false
+	}
+	joined := strings.Join(f, " ")
+	for _, prefix := range noisy {
+		if joined == prefix || strings.HasPrefix(joined, prefix+" ") {
+			return true
+		}
+	}
+	return false
+}
+
+// runners carry the command they run in their own arguments, so the program
+// that does the printing sits further along the line.
+var runners = map[string]bool{
+	"command": true,
+	"env":     true,
+	"nice":    true,
+	"nohup":   true,
+	"stdbuf":  true,
+	"time":    true,
+	"timeout": true,
+}
+
+// stripPrefixes walks past everything ahead of the program itself.
+//
+// A token it does not recognise ends the walk, so an unfamiliar wrapper leaves
+// its command unmatched rather than sliding the match onto one of that
+// wrapper's own arguments — the direction that costs a saving instead of
+// wrapping something the caller did not mean.
+func stripPrefixes(f []string) []string {
+	for len(f) > 0 {
+		if isAssignment(f[0]) {
+			f = f[1:]
+			continue
+		}
+		if !runners[f[0]] {
+			return f
+		}
+		f = f[1:]
+		// The runner's own arguments: its flags, and the count some of them
+		// take — a timeout's duration, a nice level — which arrives either as
+		// a flag's value or as a bare operand.
+		for len(f) > 0 && (strings.HasPrefix(f[0], "-") || isDuration(f[0])) {
+			f = f[1:]
+		}
+	}
+	return f
+}
+
+// isAssignment reports whether a token is a NAME=value environment prefix
+// rather than a program. The name has to be a shell identifier, which is what
+// keeps `--mode=fast` and a path carrying an `=` from being read as one.
+func isAssignment(tok string) bool {
+	eq := strings.IndexByte(tok, '=')
+	if eq <= 0 {
+		return false
+	}
+	for i, c := range tok[:eq] {
+		switch {
+		case c == '_', c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z':
+		case c >= '0' && c <= '9' && i > 0:
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// isDuration reports whether a token is a runner's own count — "600", "5m",
+// "0.5h", a nice level — rather than the command it was handed. No program is
+// named for a number, so reading one as a count costs nothing when it is not.
+func isDuration(tok string) bool {
+	if tok == "" {
+		return false
+	}
+	switch tok[len(tok)-1] {
+	case 's', 'm', 'h', 'd':
+		tok = tok[:len(tok)-1]
+	}
+	digits := false
+	for _, c := range tok {
+		switch {
+		case c >= '0' && c <= '9':
+			digits = true
+		case c == '.':
+		default:
+			return false
+		}
+	}
+	return digits
 }
 
 // bashPermission normalises the configured verb. "allow" suppresses the user's
@@ -162,17 +293,32 @@ func denyLargeCat(cmd string, b BashRules) *Decision {
 // turn the caller was waiting on.
 var opaqueTokens = []string{"`", "$(", "<"}
 
-// catSegments splits a chained command into the links that put a file into the
-// transcript, dropping the ones that do not.
+// catSegments narrows a command's links to the ones that would put a file into
+// the transcript.
 //
 // A segment carrying a pipe is a targeted read — `cat big.log | rg panic`
 // returns the matches, not the file — and one carrying a redirect never
 // reaches the transcript at all. Both were already exempt when the whole
 // command was tested as a unit, and stay exempt now that the parts are.
+func catSegments(cmd string) []string {
+	var kept []string
+	for _, seg := range splitSegments(cmd) {
+		if !strings.ContainsAny(seg, "|>") {
+			kept = append(kept, seg)
+		}
+	}
+	return kept
+}
+
+// splitSegments splits a chained command into its links, or answers nil when
+// the text is not safe to split at all.
+//
+// A newline separates commands exactly as `;` does, so it splits here too —
+// without that, only the first line of a pasted script would ever be read.
 //
 // The scanner tracks quote state so a separator inside an argument does not
 // split the command it belongs to: `rg -n "a;b" f` is one segment.
-func catSegments(cmd string) []string {
+func splitSegments(cmd string) []string {
 	for _, tok := range opaqueTokens {
 		if strings.Contains(cmd, tok) {
 			return nil
@@ -185,7 +331,7 @@ func catSegments(cmd string) []string {
 		quote rune
 	)
 	flush := func() {
-		if seg := strings.TrimSpace(buf.String()); seg != "" && !strings.ContainsAny(seg, "|>") {
+		if seg := strings.TrimSpace(buf.String()); seg != "" {
 			segs = append(segs, seg)
 		}
 		buf.Reset()
@@ -203,7 +349,7 @@ func catSegments(cmd string) []string {
 		case c == '\'' || c == '"':
 			quote = c
 			buf.WriteRune(c)
-		case c == ';':
+		case c == ';' || c == '\n':
 			flush()
 		case (c == '&' || c == '|') && i+1 < len(runes) && runes[i+1] == c:
 			flush()

@@ -38,6 +38,16 @@ func Defaults() Config {
 			},
 		},
 		Grep: GrepRules{Enabled: true, HeadLimit: 60},
+		Post: PostRules{
+			Enabled:        true,
+			Clean:          true,
+			Dedupe:         true,
+			DiffReads:      true,
+			TrimAboveBytes: 16 * 1024,
+			HeadLines:      40,
+			TailLines:      80,
+			MaxCacheBytes:  256 * 1024,
+		},
 	}
 }
 

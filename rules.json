@@ -24,5 +24,15 @@
   "grep": {
     "enabled": true,
     "head_limit": 60
+  },
+  "post": {
+    "enabled": true,
+    "clean": true,
+    "dedupe": true,
+    "diff_reads": true,
+    "trim_above_bytes": 16384,
+    "head_lines": 40,
+    "tail_lines": 80,
+    "max_cache_bytes": 262144
   }
 }

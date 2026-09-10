@@ -113,18 +113,68 @@ func TestBashRewriteRejectsUnknownConfiguredDecision(t *testing.T) {
 	}
 }
 
-// Anything the caller has already shaped is left alone: we cannot know whether
-// a redirect, a pipe or a chain is load-bearing, and guessing changes meaning.
+// Output the caller has already dealt with is left alone: a pipe has already
+// reduced it and a redirect has already sent it elsewhere, so there is nothing
+// for a trim to save. Text the scanner cannot read safely — a substitution, a
+// heredoc — is left alone for the other reason: thrift fails open.
 func TestAlreadyShapedCommandsPassThrough(t *testing.T) {
 	for _, cmd := range []string{
 		"npm test > out.log",
 		"npm test 2>&1 | tail -5",
-		"npm test && npm run build",
-		"npm test; echo done",
-		"npm test || true",
 		"go test -json ./... | jq -r '.Action'",
 		"make build < input.txt",
 		"npm test $(cat args.txt)",
+		"cd repo && npm test | tail -20",
+	} {
+		t.Run(cmd, func(t *testing.T) {
+			if got := Decide(bashEvent(t, cmd), testConfig()); got != nil {
+				t.Fatalf("must pass through, got %+v", got)
+			}
+		})
+	}
+}
+
+// The shape a noisy command actually arrives in: behind a `cd`, behind an
+// environment assignment, inside a timeout, on its own line of a pasted
+// script. A prefix test against the whole line saw none of these as the
+// program they run, which left the rule firing on almost nothing.
+func TestNoisyCommandBehindAPrefixIsTrimmed(t *testing.T) {
+	for _, cmd := range []string{
+		"cd /tmp/repo && npm test",
+		"cd /tmp/repo; make",
+		"npm test || true",
+		"JAVA_HOME=/opt/jbr npm test",
+		"env CI=1 npm test",
+		"timeout 590 npm test",
+		"timeout -k 5 600 npm test",
+		"nice -n 10 go test ./...",
+		"cd /tmp/repo\nmake",
+	} {
+		t.Run(cmd, func(t *testing.T) {
+			got := Decide(bashEvent(t, cmd), testConfig())
+			if got == nil {
+				t.Fatal("expected a trim, got passthrough")
+			}
+			if got.Rule != "bash.trim" {
+				t.Errorf("rule = %q, want %q", got.Rule, "bash.trim")
+			}
+			// The whole line is wrapped, not the noisy link alone: a `cd`
+			// that is dropped changes where every later command runs.
+			if rewritten := rewrittenCommand(t, got); !strings.Contains(rewritten, cmd) {
+				t.Errorf("rewrite dropped part of the command:\n got %q\nwant it to contain %q", rewritten, cmd)
+			}
+		})
+	}
+}
+
+// A wrapper this scanner does not know ends the walk where it stands. Reading
+// on would find the noisy word among the wrapper's own arguments and wrap a
+// command the caller never asked to run at length.
+func TestUnfamiliarWrapperPassesThrough(t *testing.T) {
+	for _, cmd := range []string{
+		"xargs npm test",
+		"git commit -m \"make it faster\"",
+		"echo npm test",
 	} {
 		t.Run(cmd, func(t *testing.T) {
 			if got := Decide(bashEvent(t, cmd), testConfig()); got != nil {
@@ -135,7 +185,7 @@ func TestAlreadyShapedCommandsPassThrough(t *testing.T) {
 }
 
 func TestQuietCommandsPassThrough(t *testing.T) {
-	for _, cmd := range []string{"ls", "git status", "echo hi", "go build ./..."} {
+	for _, cmd := range []string{"ls", "git status", "echo hi", "go build ./...", "cd /tmp && ls"} {
 		t.Run(cmd, func(t *testing.T) {
 			if got := Decide(bashEvent(t, cmd), testConfig()); got != nil {
 				t.Fatalf("command is not on the noisy list, got %+v", got)
@@ -158,6 +208,22 @@ func TestCatOfLargeFileIsDenied(t *testing.T) {
 	// Naming the cheaper tool is the entire value of spending a turn on a deny.
 	if !strings.Contains(got.Reason, "jq") || !strings.Contains(got.Reason, "rg") {
 		t.Errorf("deny must name the structured alternatives, got %q", got.Reason)
+	}
+}
+
+// A newline ends a command as surely as a semicolon does. A pasted script
+// whose second line pours a file into the transcript costs what that line
+// costs, however the lines were separated.
+func TestCatOfLargeFileOnALaterLineIsDenied(t *testing.T) {
+	path := writeFileOfSize(t, "big.json", 50000)
+
+	got := Decide(bashEvent(t, "echo starting\ncat "+path), testConfig())
+
+	if got == nil {
+		t.Fatal("expected a decision, got passthrough")
+	}
+	if got.Rule != "bash.cat" {
+		t.Errorf("rule = %q, want %q", got.Rule, "bash.cat")
 	}
 }
 

@@ -2,10 +2,10 @@
 
 A Claude Code plugin that bounds what enters your context.
 
-One `PreToolUse` dispatcher sits ahead of every `Read`, `Bash` and `Grep`. It
-rewrites the wasteful calls, denies the ones that cannot be rewritten safely,
-and writes down what it did — so the plugin can state its own savings instead
-of quoting someone else's blog post.
+Two hooks. A `PreToolUse` dispatcher sits ahead of every `Read`, `Bash` and
+`Grep` and reshapes the call. A `PostToolUse` engine sits behind *every* tool
+and trims what came back. Both write down what they did — so the plugin can
+state its own savings instead of quoting someone else's blog post.
 
 ```
 Read(600KB file)      →  deny, with the exact Haiku subagent call to run instead
@@ -14,6 +14,15 @@ Bash("npm test")      →  wrapped so 10k lines of output arrive as 80 — exit 
 Bash("cat big.json")  →  deny: "use jq -r '<path>' instead"
 Bash("head -9999 f")  →  deny: a slice that large is the file under another name
 Grep(content, no cap) →  allow, head_limit 60
+```
+
+...and after the tool has run, with the real bytes in hand:
+
+```
+40KB of build log     →  head + tail kept, middle elided, the counts stated
+ANSI colours, \r bars →  removed silently: they were never information
+the same output twice →  "byte-identical to `go test ./...` earlier — scroll back"
+Read after an Edit    →  the diff since you last read it, not the file again
 ```
 
 ## Install
@@ -29,6 +38,31 @@ Verify with `/thrift:doctor`.
 The plugin ships source, not a binary. Until `bin/thrift` exists the hook exits
 silently and nothing is bounded — which is the same way it behaves on every
 other failure.
+
+## Why the second hook changes the first
+
+A `PreToolUse` rule has to *predict* how much output a call will produce. That
+is where the `unmeasurable` bucket comes from: the un-rewritten command never
+ran, so nobody can say what it would have printed. A `PostToolUse` rule has the
+output in hand. It can count what it removes, and it can decline to act on a
+command that turned out to print three lines — which no prediction can do.
+
+So the post engine's savings are **measured**, every one of them, and it needs
+no allowlist of noisy commands to guess from. `updatedToolOutput` landed in
+Claude Code 2.1.121; the hosted docs still say tool output cannot be rewritten.
+
+Two things the host does that shape the design:
+
+- **The replacement is validated against the tool's own output schema.** A
+  `Bash` rewrite that returns a bare string is rejected and the original is
+  used. So thrift never constructs a response — it decodes the one the tool
+  produced, replaces only the text fields it understands, and re-encodes the
+  rest untouched.
+- **PostToolUse hooks run in parallel on the original output, last-write-wins.**
+  An identity rewrite emitted for form's sake can land after another hook's
+  redaction and discard it. thrift emits a rewrite only when it removed bytes,
+  and `doctor` now warns about a competing `PostToolUse` hook for that reason
+  rather than for the lost saving.
 
 ## The three safety classes
 
@@ -87,6 +121,7 @@ figure, `evals/run.sh --ab` describes the only method that produces one.
 | --- | --- |
 | ≤15ms per decision (it runs on every tool call) | p99 **5µs** |
 | ≤600 tokens resident (descriptions + directive) | **~372** |
+| ≤25ms per rewrite (post engine, incl. session store) | p99 **2.7ms** |
 
 Both are asserted by `evals/run.sh`, which fails the build if either is
 exceeded. A plugin that costs more to carry than it saves is a loss, and that
@@ -97,6 +132,8 @@ includes this one.
 ```bash
 thrift doctor    # read-only: rules, ledger, competing hooks, latency
 thrift report    # what it saved, by basis and by rule
+thrift cache     # what the tokens it did send were billed at
+thrift audit     # what a session carries before any tool runs
 make eval        # the whole suite
 bash evals/run.sh --ab   # how to produce a real savings number
 ```
